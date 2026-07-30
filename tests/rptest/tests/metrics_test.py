@@ -50,8 +50,8 @@ class MetricsTest(Test):
         # We ignore those because:
         #  - seastar metrics so not affected by aggregate_metrics anyway
         #  - compaction io_queue class metrics can pop up after a delay so might make this flaky
-        #  - cluster_info registers in the background once the cluster UUID is
-        #    known, so it can appear between scrapes
+        #  - cluster_info registers in the background once the cluster
+        #    identity is known, so it can appear between scrapes
         return list(
             metric
             for metric in metrics
@@ -217,9 +217,9 @@ class ClusterIdentityMetricsTest(RedpandaTest):
     def __init__(self, test_ctx, *args, **kwargs):
         super().__init__(test_ctx, num_brokers=3, *args, **kwargs)
 
-    def _cluster_uuid_label(self, node, endpoint) -> str | None:
-        """The cluster_uuid label of the cluster_info metric on `endpoint`,
-        or None if the metric has not been registered yet."""
+    def _cluster_info_labels(self, node, endpoint) -> dict[str, str] | None:
+        """The labels of the cluster_info metric on `endpoint`, or None if
+        the metric has not been registered yet."""
         prefix = (
             "redpanda" if endpoint == MetricsEndpoint.PUBLIC_METRICS else "vectorized"
         )
@@ -238,32 +238,45 @@ class ClusterIdentityMetricsTest(RedpandaTest):
             f"expected a single cluster_info series, got {samples}"
         )
         assert samples[0].value == 1
-        return samples[0].labels["cluster_uuid"]
+        return samples[0].labels
 
     @cluster(num_nodes=3)
     def test_cluster_info_metric(self):
         """
         Every broker must expose the cluster_info identity metric on both
         metrics endpoints, carrying the bootstrap cluster UUID as reported
-        by the admin API's GET /v1/cluster/uuid.
+        by the admin API's GET /v1/cluster/uuid and the cluster_id generated
+        by the metrics reporter into cluster config.
 
-        The metric registers in the background once the cluster UUID is
-        known, so tolerate a brief delay after startup.
+        The metric registers in the background once both identities are
+        known (the cluster_id needs the controller leader to propagate it),
+        so tolerate a brief delay after startup.
         """
-        expected_uuid = Admin(self.redpanda).get_cluster_uuid(self.redpanda.nodes[0])
+        admin = Admin(self.redpanda)
+        expected_uuid = admin.get_cluster_uuid(self.redpanda.nodes[0])
         assert expected_uuid, "admin API returned no cluster UUID"
+        expected_cluster_id = wait_until_result(
+            lambda: admin.get_cluster_config(self.redpanda.nodes[0]).get("cluster_id"),
+            timeout_sec=30,
+            backoff_sec=1,
+            err_msg="cluster_id was not initialized",
+        )
 
         for node in self.redpanda.nodes:
             for endpoint in [MetricsEndpoint.METRICS, MetricsEndpoint.PUBLIC_METRICS]:
-                uuid = wait_until_result(
-                    lambda: self._cluster_uuid_label(node, endpoint),
+                labels = wait_until_result(
+                    lambda: self._cluster_info_labels(node, endpoint),
                     timeout_sec=30,
                     backoff_sec=1,
                     retry_on_exc=True,
                     err_msg=f"cluster_info metric did not appear on "
                     f"{endpoint.value} of {node.name}",
                 )
-                assert uuid == expected_uuid, (
+                expected_labels = {
+                    "cluster_uuid": expected_uuid,
+                    "cluster_id": expected_cluster_id,
+                }
+                assert labels == expected_labels, (
                     f"cluster_info on {endpoint.value} of {node.name} reports "
-                    f"cluster_uuid={uuid}, expected {expected_uuid}"
+                    f"{labels}, expected {expected_labels}"
                 )
