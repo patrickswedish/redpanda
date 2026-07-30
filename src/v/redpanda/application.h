@@ -66,6 +66,7 @@
 #include "wasm/fwd.h"
 
 #include <seastar/core/app-template.hh>
+#include <seastar/core/condition-variable.hh>
 #include <seastar/core/gate.hh>
 #include <seastar/core/metrics_registration.hh>
 #include <seastar/core/sharded.hh>
@@ -383,11 +384,13 @@ private:
 
     metrics::internal_metric_groups _metrics;
     ss::sharded<metrics::public_metrics_group_service> _public_metrics;
-    // Cluster identity metrics register in a background fiber once the
-    // cluster UUID becomes available (immediately on restart, after
-    // bootstrap on a brand new cluster). The gate is closed via _deferred
-    // at shutdown.
+    // Cluster identity metrics register in a background fiber once both the
+    // cluster UUID and cluster_id become available (immediately on restart,
+    // shortly after bootstrap on a brand new cluster). The condition
+    // variable wakes the fiber when cluster_id is set; it is broken and the
+    // gate closed via _deferred at shutdown.
     ss::gate _cluster_identity_gate;
+    ss::condition_variable _cluster_identity_cvar;
     metrics::all_metrics_groups _cluster_identity_metrics;
     std::unique_ptr<kafka::rm_group_proxy_impl> _rm_group_proxy;
     ss::sharded<cluster::data_migrations::group_proxy>

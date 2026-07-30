@@ -733,5 +733,8 @@ void application::post_start_tasks() {
     ssx::spawn_with_gate(_cluster_identity_gate, [this] {
         return register_cluster_identity_metrics();
     });
-    _deferred.emplace_back([this] { _cluster_identity_gate.close().get(); });
+    _deferred.emplace_back([this] {
+        _cluster_identity_cvar.broken();
+        _cluster_identity_gate.close().get();
+    });
 }
