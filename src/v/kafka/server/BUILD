@@ -117,6 +117,27 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "subscription_metadata_hash",
+    srcs = [
+        "subscription_metadata_hash.cc",
+    ],
+    hdrs = [
+        "subscription_metadata_hash.h",
+    ],
+    implementation_deps = [
+        "//src/v/hashing:xx",
+        "//src/v/utils:uuid",
+        "@seastar",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/v/container:chunked_vector",
+        "//src/v/model",
+        "@abseil-cpp//absl/container:btree",
+    ],
+)
+
+redpanda_cc_library(
     name = "server",
     srcs = [
         "client_quota_translator.cc",
