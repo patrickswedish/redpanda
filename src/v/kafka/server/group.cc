@@ -2230,6 +2230,25 @@ offset_store::prepare_offset_commits(const offset_commit_request& r) {
     chunked_vector<std::pair<model::topic_partition, offset_metadata>>
       offset_commits;
 
+    /*
+     * kafka commits the last value for a partition that a request names more
+     * than once, so index the last entry for each partition and commit that
+     * one. one record per partition also keeps the offsets map and the log in
+     * agreement: every record in this batch carries the same log offset, and
+     * try_upsert_offset only replaces a value on a higher one. the keys are
+     * views over the request, which outlives this function.
+     */
+    chunked_hash_map<
+      model::topic_partition_view,
+      const offset_commit_request_partition*>
+      last_entry;
+    for (const auto& t : r.data.topics) {
+        for (const auto& p : t.partitions) {
+            last_entry[model::topic_partition_view(t.name, p.partition_index)]
+              = &p;
+        }
+    }
+
     const auto expiry_timestamp = [&r]() -> std::optional<model::timestamp> {
         if (r.data.retention_time_ms == -1) {
             return std::nullopt;
@@ -2249,6 +2268,13 @@ offset_store::prepare_offset_commits(const offset_commit_request& r) {
     for (const auto& t : r.data.topics) {
         offset_commits.reserve(offset_commits.size() + t.partitions.size());
         for (const auto& p : t.partitions) {
+            if (
+              last_entry.at(
+                model::topic_partition_view(t.name, p.partition_index))
+              != &p) {
+                continue;
+            }
+
             const auto commit_timestamp = get_commit_timestamp(p);
             update_store_offset_builder(
               builder,
