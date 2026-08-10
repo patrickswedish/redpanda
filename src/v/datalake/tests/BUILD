@@ -275,6 +275,20 @@ redpanda_cc_gtest(
     ],
 )
 
+redpanda_cc_gtest(
+    name = "parquet_write_config_test",
+    timeout = "short",
+    srcs = [
+        "parquet_write_config_test.cc",
+    ],
+    deps = [
+        "//src/v/datalake:parquet_write_config",
+        "//src/v/test_utils:gtest",
+        "@googletest//:gtest",
+        "@seastar",
+    ],
+)
+
 redpanda_cc_bench(
     name = "record_multiplexer_rpbench",
     timeout = "long",
