@@ -17,7 +17,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <random>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -46,6 +48,47 @@ kafka::subscribed_topic_metadata a_topic() {
       {.partition = model::partition_id{0}, .racks = racks_of({"rack-a"})});
     partitions.push_back(
       {.partition = model::partition_id{1}, .racks = racks_of({"rack-b"})});
+    return kafka::subscribed_topic_metadata{
+      .id = topic_id_of(1),
+      .name = model::topic{"topic-1"},
+      .partitions = std::move(partitions),
+    };
+}
+
+using partition_spec
+  = std::pair<model::partition_id, std::vector<model::rack_id>>;
+
+/// Draws partition ids from a range shorter than the list, and racks from four
+/// names, so that a repeated id and a repeated rack both turn up.
+std::vector<partition_spec> random_partitions(std::mt19937& engine) {
+    std::uniform_int_distribution<int> partition_count{1, 8};
+    std::uniform_int_distribution<int> partition_id{0, 4};
+    std::uniform_int_distribution<int> rack_count{0, 3};
+    std::uniform_int_distribution<int> rack_name{0, 3};
+
+    std::vector<partition_spec> specs;
+    const auto count = partition_count(engine);
+    specs.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        std::vector<model::rack_id> racks;
+        const auto racks_here = rack_count(engine);
+        racks.reserve(racks_here);
+        for (int j = 0; j < racks_here; ++j) {
+            racks.emplace_back(
+              ss::sstring{"rack-"} + std::to_string(rack_name(engine)));
+        }
+        specs.emplace_back(model::partition_id{partition_id(engine)}, racks);
+    }
+    return specs;
+}
+
+kafka::subscribed_topic_metadata
+topic_of(const std::vector<partition_spec>& specs) {
+    chunked_vector<kafka::partition_racks> partitions;
+    partitions.reserve(specs.size());
+    for (const auto& [id, racks] : specs) {
+        partitions.push_back({.partition = id, .racks = racks});
+    }
     return kafka::subscribed_topic_metadata{
       .id = topic_id_of(1),
       .name = model::topic{"topic-1"},
@@ -247,4 +290,24 @@ TEST(subscription_metadata_hash, algorithm_is_frozen) {
     group.emplace(
       model::topic{"topic-1"}, kafka::topic_metadata_hash(a_topic()));
     EXPECT_EQ(kafka::subscription_metadata_hash(group), 6715244579225394956);
+}
+
+/// The comparator that orders the partitions must be a strict weak ordering,
+/// because std::sort has undefined behaviour with one that is not. A repeated
+/// partition id and a repeated rack both reach its tiebreak, and the shapes
+/// below draw enough of each to hit it.
+TEST(subscription_metadata_hash, ignores_input_order_over_random_topics) {
+    std::mt19937 engine{0x848};
+    for (int shape = 0; shape < 100; ++shape) {
+        auto specs = random_partitions(engine);
+        const auto expected = kafka::topic_metadata_hash(topic_of(specs));
+
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            std::shuffle(specs.begin(), specs.end(), engine);
+            for (auto& [_, racks] : specs) {
+                std::shuffle(racks.begin(), racks.end(), engine);
+            }
+            EXPECT_EQ(expected, kafka::topic_metadata_hash(topic_of(specs)));
+        }
+    }
 }
